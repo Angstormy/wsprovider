@@ -1,1 +1,1 @@
-python-3.10.12
+python-telegram-bot==20.6
