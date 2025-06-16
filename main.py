@@ -6,7 +6,7 @@ from telegram.ext import (
 )
 
 # Bot token and admin ID
-TOKEN = 'YOUR_BOT_TOKEN'  # 🔁 Replace this!
+TOKEN = '7523409542:AAGlQI94jLTKoAhTZwIoZhv99b-9L5nfCu4'  # 🔁 Replace this!
 ADMIN_ID = 1908801848     # 🔁 Replace with your Telegram ID
 
 # In-memory data
