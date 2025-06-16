@@ -6,17 +6,17 @@ from telegram.ext import (
 
 # Bot token and admin ID
 TOKEN = '7523409542:AAGlQI94jLTKoAhTZwIoZhv99b-9L5nfCu4'  # 🔁 Replace this!
-ADMIN_ID = 1908801848
+ADMIN_ID = 1908801848     # Replace with your own Telegram user ID
 
 # In-memory data
 whitelist = set()
 user_boss_map = {}
-awaiting_message = {}  # Tracks users in continuous forwarding mode
+awaiting_message = {}
 
 # Logging
 logging.basicConfig(level=logging.INFO)
 
-# /start
+# /start - Welcome based on role
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
@@ -24,19 +24,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if uid == ADMIN_ID:
         await update.message.reply_text(
+            f"👑 Welcome {name} (Admin)!\n"
+            f"🔧 You can manage users, assign bosses, and monitor the bot."
+        )
+    elif uid in user_boss_map.values():
+        await update.message.reply_text(
             f"👋 Welcome {name}!\n"
-            f"📥 You will receive updates from your employees here."
+            f"📥 You are a *Boss*. You will receive messages from your assigned employees here.",
+            parse_mode="Markdown"
         )
     elif uid in whitelist:
         await update.message.reply_text(
             f"👋 Welcome {name}!\n"
-            f"✅ You are authorized to use this bot.\n"
-            f"🔔 Please use it only for work-related communication."
+            f"✅ You are an *Employee*. You can use this bot only for work-related message forwarding.\n"
+            f"Use /help to get started.",
+            parse_mode="Markdown"
         )
     else:
         await update.message.reply_text(
             f"👋 Hello {name}, you are not authorized to use this bot.\n"
-            f"❌ Contact admin for access."
+            f"❌ Please contact the Admin to get access."
         )
 
 # /help
@@ -59,25 +66,24 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     boss_id = user_boss_map.get(uid)
     if boss_id:
-        await update.message.reply_text("✅ Your boss is set to: `xxxx`", parse_mode="Markdown")
+        masked = str(boss_id)[:2] + "****" + str(boss_id)[-2:]
+        await update.message.reply_text(f"✅ Your boss is set to: {masked}")
     else:
         await update.message.reply_text("❌ No boss assigned.")
 
-# /sendtoboss - activate continuous forwarding
+# /sendtoboss - Start continuous forwarding
 async def send_to_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid not in whitelist:
         await update.message.reply_text("🚫 You are not authorized.")
         return
-
     if uid not in user_boss_map:
         await update.message.reply_text("❌ No boss assigned.")
         return
-
     awaiting_message[uid] = True
     await update.message.reply_text("📨 Forwarding mode is ON. All your messages will be sent to your boss.\nType /stopforward to stop.")
 
-# /stopforward - stop forwarding mode
+# /stopforward - Stop forwarding
 async def stop_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if awaiting_message.get(uid):
@@ -86,16 +92,14 @@ async def stop_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("ℹ️ You are not in forwarding mode.")
 
-# Handles all messages: forward if user is in forwarding mode
+# Message handler: forwards if forwarding mode is ON
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-
     if awaiting_message.get(uid):
         boss_id = user_boss_map.get(uid)
         if not boss_id:
             await update.message.reply_text("❌ No boss assigned.")
             return
-
         try:
             await context.bot.copy_message(
                 chat_id=boss_id,
@@ -107,7 +111,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Forwarding failed: {e}")
             await update.message.reply_text("⚠️ Failed to forward.")
     else:
-        return  # Not in forwarding mode
+        return  # Ignore other messages
 
 # Admin: /adduser
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,7 +168,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"👤 {uid} → 👨‍💼 {user_boss_map.get(uid, 'No boss')}" for uid in whitelist]
     await update.message.reply_text("\n".join(lines))
 
-# Main entry
+# Main function
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -177,7 +181,6 @@ def main():
     app.add_handler(CommandHandler("removeuser", remove_user))
     app.add_handler(CommandHandler("setboss", set_boss))
     app.add_handler(CommandHandler("listusers", list_users))
-
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
     app.run_polling()
