@@ -1,12 +1,13 @@
 import logging
+import re
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 )
 
 # Bot token and admin ID
-TOKEN = '7523409542:AAGlQI94jLTKoAhTZwIoZhv99b-9L5nfCu4'  # 🔁 Replace this!
-ADMIN_ID = 1908801848     # Replace with your own Telegram user ID
+TOKEN = 'YOUR_BOT_TOKEN'  # 🔁 Replace this!
+ADMIN_ID = 1908801848     # 🔁 Replace with your Telegram ID
 
 # In-memory data
 whitelist = set()
@@ -16,7 +17,32 @@ awaiting_message = {}
 # Logging
 logging.basicConfig(level=logging.INFO)
 
-# /start - Welcome based on role
+# Utility: generate fuzzy keyword variants
+def get_fuzzy_keywords(name, username, uid):
+    parts = name.lower().split()
+    name_variants = set()
+    for part in parts:
+        name_variants.add(part)
+        if len(part) > 3:
+            name_variants.add(part[:3])
+    if username:
+        name_variants.add(username.lower())
+    name_variants.add(str(uid))
+    return name_variants
+
+# Utility: suspicious phrases
+SUSPICIOUS_PATTERNS = [
+    r"\bmy name is\b",
+    r"\bi am\b",
+    r"\bthis is\b",
+    r"\bmy username\b",
+    r"\buser id\b",
+    r"\bid is\b",
+    r"\bcontact me\b",
+    r"\bmessage me\b"
+]
+
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
@@ -36,7 +62,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif uid in whitelist:
         await update.message.reply_text(
             f"👋 Welcome {name}!\n"
-            f"✅ You are an *Employee*. You can use this bot only for work-related message forwarding.\n"
+            f"✅ You are an *Employee*. Use this bot only for work-related message forwarding.\n"
             f"Use /help to get started.",
             parse_mode="Markdown"
         )
@@ -71,7 +97,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ No boss assigned.")
 
-# /sendtoboss - Start continuous forwarding
+# /sendtoboss
 async def send_to_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid not in whitelist:
@@ -83,7 +109,7 @@ async def send_to_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting_message[uid] = True
     await update.message.reply_text("📨 Forwarding mode is ON. All your messages will be sent to your boss.\nType /stopforward to stop.")
 
-# /stopforward - Stop forwarding
+# /stopforward
 async def stop_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if awaiting_message.get(uid):
@@ -92,14 +118,40 @@ async def stop_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("ℹ️ You are not in forwarding mode.")
 
-# Message handler: forwards if forwarding mode is ON
+# 🚨 handle_message: with full validation
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    name = (update.effective_user.first_name or "").lower()
+    username = (update.effective_user.username or "").lower()
+    message_text = (update.message.text or "").lower()
+
     if awaiting_message.get(uid):
         boss_id = user_boss_map.get(uid)
         if not boss_id:
             await update.message.reply_text("❌ No boss assigned.")
             return
+
+        # 🚨 Check for identity or suspicious phrases
+        keywords = get_fuzzy_keywords(name, username, uid)
+        matched_keywords = [kw for kw in keywords if kw in message_text]
+
+        suspicious_match = any(re.search(p, message_text) for p in SUSPICIOUS_PATTERNS)
+
+        if matched_keywords or suspicious_match:
+            await update.message.reply_text("🚫 Message contains personal identity info. It was NOT forwarded.")
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    f"🚨 *Blocked Message Attempt!*\n"
+                    f"👤 From: {name} (ID: {uid}, @{username})\n"
+                    f"🛑 Reason: {'Suspicious phrase' if suspicious_match else 'Keyword match'}\n"
+                    f"📝 Message:\n{update.message.text}"
+                ),
+                parse_mode="Markdown"
+            )
+            return
+
+        # ✅ Forward valid message
         try:
             await context.bot.copy_message(
                 chat_id=boss_id,
@@ -111,7 +163,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Forwarding failed: {e}")
             await update.message.reply_text("⚠️ Failed to forward.")
     else:
-        return  # Ignore other messages
+        return  # Not in forwarding mode
 
 # Admin: /adduser
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,7 +220,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"👤 {uid} → 👨‍💼 {user_boss_map.get(uid, 'No boss')}" for uid in whitelist]
     await update.message.reply_text("\n".join(lines))
 
-# Main function
+# Entry point
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
