@@ -1,209 +1,197 @@
 import logging
+import re
+from rapidfuzz import fuzz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
-from rapidfuzz import fuzz
 
-TOKEN = '7523409542:AAGlQI94jLTKoAhTZwIoZhv99b-9L5nfCu4'  # Replace with your bot token
-ADMIN_ID = 1908801848     # Replace with your own Telegram ID
+TOKEN = '7523409542:AAGlQI94jLTKoAhTZwIoZhv99b-9L5nfCu4'
+ADMIN_ID = 1908801848  # Replace with your admin ID
 
-# In-memory data
 whitelist = set()
 user_boss_map = {}
 awaiting_message = {}
+admin_state = {}  # Tracks admin input steps
 
-# Logging
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 
-# Keywords to detect identity leaks
-SUSPICIOUS_KEYWORDS = [
-    "my name", "this is", "i am", "myself", "contact me", "reach me",
-    "username", "user id", "uid", "my id", "nm is", "name is"
-]
-
-def is_suspicious(message: str, user) -> bool:
-    message = message.lower()
-    name_parts = (user.first_name or "").lower().split()
-    if user.last_name:
-        name_parts += user.last_name.lower().split()
-    username = (user.username or '').lower()
-    uid_str = str(user.id)
-
-    # Check for direct UID or username
-    if uid_str in message or username in message:
-        return True
-
-    # Check fuzzy name match
-    for part in name_parts:
-        if part and fuzz.partial_ratio(part, message) > 85:
-            return True
-
-    # Check for suspicious keywords
-    for keyword in SUSPICIOUS_KEYWORDS:
-        if keyword in message:
-            return True
-
-    return False
-
-def get_main_buttons(uid):
-    buttons = []
-    if uid == ADMIN_ID:
-        buttons = [
-            [InlineKeyboardButton("➕ Add User", callback_data="admin_add")],
-            [InlineKeyboardButton("❌ Remove User", callback_data="admin_remove")],
-            [InlineKeyboardButton("👨‍💼 Set Boss", callback_data="admin_setboss")],
-            [InlineKeyboardButton("📋 List Users", callback_data="admin_list")]
-        ]
-    elif uid in user_boss_map.values():
-        buttons = [[InlineKeyboardButton("ℹ️ You are a Boss. No actions available.", callback_data="noop")]]
-    elif uid in whitelist:
-        buttons = [
-            [InlineKeyboardButton("📤 Start Forwarding", callback_data="start_forward")],
-            [InlineKeyboardButton("🛑 Stop Forwarding", callback_data="stop_forward")],
-            [InlineKeyboardButton("📊 Check Status", callback_data="check_status")]
-        ]
-    return InlineKeyboardMarkup(buttons)
-
-async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    await update.message.reply_text("🔘 Choose an action:", reply_markup=get_main_buttons(uid))
-
-# /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = user.id
-    name = user.first_name or "User"
-
-    if uid == ADMIN_ID:
-        text = f"👑 Welcome {name} (Admin)! You can manage users and bosses."
-    elif uid in user_boss_map.values():
-        text = f"🤵 Hello {name}! You are a *Boss*. Messages from your employees will arrive here."
-    elif uid in whitelist:
-        text = f"👋 Welcome {name}! You are an *Employee*. Use the buttons below to forward messages to your boss."
+def get_main_keyboard(user_id):
+    if user_id == ADMIN_ID:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Add User", callback_data="add_user")],
+            [InlineKeyboardButton("👨‍💼 Set Boss", callback_data="set_boss")],
+            [InlineKeyboardButton("🗑️ Remove User", callback_data="remove_user")],
+            [InlineKeyboardButton("📋 List Users", callback_data="list_users")]
+        ])
+    elif user_id in user_boss_map.values():
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("ℹ️ Boss Panel (View Only)", callback_data="noop")]
+        ])
+    elif user_id in whitelist:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📨 Send to Boss", callback_data="sendtoboss")],
+            [InlineKeyboardButton("🛑 Stop Forward", callback_data="stopforward")],
+            [InlineKeyboardButton("🔎 Check Status", callback_data="status")]
+        ])
     else:
-        text = f"🚫 Hello {name}, you are not authorized. Please contact the admin."
-        await update.message.reply_text(text)
-        return
+        return None
 
-    await update.message.reply_text(text, parse_mode="Markdown")
-    await send_main_menu(update, context)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = update.effective_user.first_name or "User"
+    kb = get_main_keyboard(uid)
 
-# Callback handler for inline buttons
+    if uid == ADMIN_ID:
+        text = f"👑 Welcome {name} (Admin)!\nUse the buttons to manage the system."
+    elif uid in user_boss_map.values():
+        text = f"👋 Welcome {name}!\nYou're a *Boss*. Employees will forward messages to you."
+    elif uid in whitelist:
+        text = f"👋 Welcome {name}!\nYou're an *Employee*. Use this bot to message your boss securely."
+    else:
+        text = f"⛔ You are not authorized.\nContact admin to gain access."
+
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ℹ️ Use the buttons below based on your role.",
+                                    reply_markup=get_main_keyboard(update.effective_user.id))
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    boss_id = user_boss_map.get(uid)
+    if boss_id:
+        await update.message.reply_text(f"✅ Your boss is: {boss_id}")
+    else:
+        await update.message.reply_text("❌ You don't have a boss assigned yet.")
+    await update.message.reply_text("📍 What do you want to do next?",
+                                    reply_markup=get_main_keyboard(uid))
+
+# Interactive button handler
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    uid = query.from_user.id
     await query.answer()
+    uid = query.from_user.id
+    data = query.data
 
-    if query.data == "admin_add":
-        await query.edit_message_text("✏️ Use /adduser <user_id> to add a user.")
-    elif query.data == "admin_remove":
-        await query.edit_message_text("🗑️ Use /removeuser <user_id> to remove a user.")
-    elif query.data == "admin_setboss":
-        await query.edit_message_text("🧩 Use /setboss <user_id> <boss_id> to assign a boss.")
-    elif query.data == "admin_list":
-        users = [f"👤 {u} ➔ 👨‍💼 {user_boss_map.get(u, 'None')}" for u in whitelist]
-        await query.edit_message_text("\n".join(users) or "No users in whitelist.")
+    if uid != ADMIN_ID and data in {"add_user", "remove_user", "set_boss", "list_users"}:
+        await query.edit_message_text("⛔ Only the admin can use this.")
+        return
 
-    elif query.data == "start_forward":
-        if uid not in whitelist:
-            await query.edit_message_text("❌ You are not allowed to forward messages.")
-        elif uid not in user_boss_map:
-            await query.edit_message_text("⚠️ You have no boss assigned.")
+    if data == "add_user":
+        admin_state[uid] = "awaiting_add_user"
+        await query.edit_message_text("📥 Enter the User ID to add:")
+    elif data == "remove_user":
+        admin_state[uid] = "awaiting_remove_user"
+        await query.edit_message_text("🗑️ Enter the User ID to remove:")
+    elif data == "set_boss":
+        admin_state[uid] = "awaiting_set_boss"
+        await query.edit_message_text("👨‍💼 Enter in format: <user_id> <boss_id>")
+    elif data == "list_users":
+        if not whitelist:
+            await query.edit_message_text("⚠️ No users in the system yet.")
         else:
-            awaiting_message[uid] = True
-            await query.edit_message_text("✅ Forwarding started. All your messages will go to your boss.")
-    elif query.data == "stop_forward":
+            lines = [f"👤 {u} → 👨‍💼 {user_boss_map.get(u, 'No Boss')}" for u in whitelist]
+            await query.edit_message_text("\n".join(lines))
+        await query.message.reply_text("⬇️ Choose your next action:",
+                                       reply_markup=get_main_keyboard(uid))
+    elif data == "sendtoboss":
+        awaiting_message[uid] = True
+        await query.edit_message_text("📨 Forwarding mode ON. All messages will be sent to your boss.")
+        await query.message.reply_text("⬇️ What would you like to do next?",
+                                       reply_markup=get_main_keyboard(uid))
+    elif data == "stopforward":
         awaiting_message.pop(uid, None)
         await query.edit_message_text("🛑 Forwarding stopped.")
-    elif query.data == "check_status":
-        bid = user_boss_map.get(uid)
-        if bid:
-            masked = str(bid)[:2] + "****" + str(bid)[-2:]
-            await query.edit_message_text(f"👨‍💼 Your boss ID is: {masked}")
-        else:
-            await query.edit_message_text("❌ No boss assigned.")
-    else:
-        await query.edit_message_text("ℹ️ No action.")
+        await query.message.reply_text("⬇️ Choose next action:",
+                                       reply_markup=get_main_keyboard(uid))
+    elif data == "status":
+        await status(update, context)
 
-    # After response, show menu again
-    await context.bot.send_message(chat_id=uid, text="🔘 Main Menu:", reply_markup=get_main_buttons(uid))
+# Suspicious message checker
+def is_suspicious(uid, username, name, message):
+    message_lower = message.lower()
+    bad_patterns = [
+        r"\bmy name is\b", r"\bi am\b", r"\busername\b", r"\bid\b", r"\bnm\b", r"\bthis is\b"
+    ]
+    if any(p in message_lower for p in [str(uid), str(name).lower(), str(username).lower()]):
+        return True
+    if any(re.search(pattern, message_lower) for pattern in bad_patterns):
+        return True
+    if fuzz.partial_ratio(str(uid), message) > 80:
+        return True
+    return False
 
-# Message handler
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Handle text messages
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
-    message_text = update.message.text or ""
+    text = update.message.text.strip()
 
-    if awaiting_message.get(uid):
-        if is_suspicious(message_text, user):
-            await update.message.reply_text("🚨 Message blocked due to sensitive content.")
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"⚠️ Suspicious message from {uid} blocked:\n\n{message_text}"
-            )
-            return
-
-        boss_id = user_boss_map.get(uid)
-        if boss_id:
+    if uid == ADMIN_ID and uid in admin_state:
+        state = admin_state.pop(uid)
+        if state == "awaiting_add_user":
             try:
-                await context.bot.copy_message(
-                    chat_id=boss_id,
-                    from_chat_id=update.effective_chat.id,
-                    message_id=update.message.message_id
-                )
-                await update.message.reply_text("📨 Message forwarded to your boss.")
-            except Exception as e:
-                logging.error(f"Failed to forward message: {e}")
-                await update.message.reply_text("⚠️ Failed to forward message.")
-        else:
+                target = int(text)
+                whitelist.add(target)
+                await update.message.reply_text(f"✅ User {target} added.")
+            except:
+                await update.message.reply_text("❌ Invalid User ID.")
+        elif state == "awaiting_remove_user":
+            try:
+                target = int(text)
+                whitelist.discard(target)
+                user_boss_map.pop(target, None)
+                await update.message.reply_text(f"🗑️ User {target} removed.")
+            except:
+                await update.message.reply_text("❌ Invalid User ID.")
+        elif state == "awaiting_set_boss":
+            try:
+                parts = text.split()
+                uid2 = int(parts[0])
+                boss_id = int(parts[1])
+                user_boss_map[uid2] = boss_id
+                await update.message.reply_text(f"✅ Boss {boss_id} assigned to user {uid2}.")
+            except:
+                await update.message.reply_text("❌ Format must be: <user_id> <boss_id>")
+
+        await update.message.reply_text("📍 Choose next action:",
+                                        reply_markup=get_main_keyboard(uid))
+        return
+
+    # If employee is in forwarding mode
+    if awaiting_message.get(uid):
+        boss_id = user_boss_map.get(uid)
+        if not boss_id:
             await update.message.reply_text("⚠️ No boss assigned.")
+            return
+        if is_suspicious(uid, user.username or "", user.first_name or "", text):
+            await context.bot.send_message(ADMIN_ID,
+                f"⚠️ Suspicious message blocked from {uid}:\n{text}")
+            await update.message.reply_text("🚫 Message blocked due to sensitive content.")
+            return
+        try:
+            await context.bot.copy_message(
+                chat_id=boss_id,
+                from_chat_id=update.effective_chat.id,
+                message_id=update.message.message_id
+            )
+            await update.message.reply_text("✅ Forwarded to boss.")
+        except:
+            await update.message.reply_text("⚠️ Failed to forward.")
+    else:
+        await update.message.reply_text("ℹ️ Message ignored.\nUse 'Send to Boss' to start forwarding.")
 
-# Admin commands
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        uid = int(context.args[0])
-        whitelist.add(uid)
-        await update.message.reply_text(f"✅ User {uid} added to whitelist.")
-    except:
-        await update.message.reply_text("❌ Usage: /adduser <user_id>")
-
-async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        uid = int(context.args[0])
-        whitelist.discard(uid)
-        awaiting_message.pop(uid, None)
-        user_boss_map.pop(uid, None)
-        await update.message.reply_text(f"🗑️ User {uid} removed.")
-    except:
-        await update.message.reply_text("❌ Usage: /removeuser <user_id>")
-
-async def set_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        uid = int(context.args[0])
-        bid = int(context.args[1])
-        user_boss_map[uid] = bid
-        await update.message.reply_text(f"👨‍💼 Boss {bid} assigned to user {uid}.")
-    except:
-        await update.message.reply_text("❌ Usage: /setboss <user_id> <boss_id>")
-
-# App entry
+# Main function
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("adduser", add_user))
-    app.add_handler(CommandHandler("removeuser", remove_user))
-    app.add_handler(CommandHandler("setboss", set_boss))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.run_polling()
 
