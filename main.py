@@ -6,7 +6,7 @@ from telegram.ext import (
 )
 
 # Load token from environment variable
-TOKEN = os.getenv("TOKEN")
+TOKEN = 7523409542:AAGlQI94jLTKoAhTZwIoZhv99b-9L5nfCu4
 
 # Admin Telegram User ID (replace with your own)
 ADMIN_ID = 1908801848 # 🔁 Replace this with your Telegram user ID
