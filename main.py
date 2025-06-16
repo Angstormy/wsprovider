@@ -18,7 +18,26 @@ logging.basicConfig(level=logging.INFO)
 
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot is running...")
+    user = update.effective_user
+    uid = user.id
+    name = user.first_name or "User"
+
+    if uid == ADMIN_ID:
+        await update.message.reply_text(
+            f"👋 Welcome {name}!\n"
+            f"📥 You will receive updates from your employees here."
+        )
+    elif uid in whitelist:
+        await update.message.reply_text(
+            f"👋 Welcome {name}!\n"
+            f"✅ You are authorized to use this bot.\n"
+            f"🔔 Please use it only for work-related communication."
+        )
+    else:
+        await update.message.reply_text(
+            f"👋 Hello {name}, you are not authorized to use this bot.\n"
+            f"❌ Contact admin for access."
+        )
 
 # /help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -40,7 +59,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     boss_id = user_boss_map.get(uid)
     if boss_id:
-        await update.message.reply_text(f"✅ Your boss is set to: {boss_id}")
+        await update.message.reply_text("✅ Your boss is set to: `xxxx`", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ No boss assigned.")
 
