@@ -1,2 +1,3 @@
 python-telegram-bot==20.6
 certifi>=2023.7.22
+rapidfuzz
