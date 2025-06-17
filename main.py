@@ -51,39 +51,27 @@ async def update_reply_markup(uid, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# === COMMAND HANDLERS ===
+# === COMMAND ===
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = user.id
-    await update_reply_markup(uid, context)
+    uid = update.effective_user.id
+    await send_role_message(uid, context)
 
-    if uid == ADMIN_ID:
-        msg = f"👑 Welcome Admin {user.first_name}!"
-    elif uid in user_boss_map.values():
-        msg = f"👋 Hello Boss {user.first_name}, your employees' messages will appear here."
-    elif uid in whitelist:
-        msg = f"👋 Welcome {user.first_name}! Use buttons below to manage messages to your boss."
-    else:
-        msg = "⛔ You are not authorized to use this bot."
-
-    reply_markup = role_keyboard(uid)
-    sent = await update.message.reply_text(msg, reply_markup=reply_markup)
-    last_bot_message[uid] = sent.message_id
-
-# === CALLBACK BUTTON HANDLER ===
+# === BUTTON HANDLER ===
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     uid = query.from_user.id
     data = query.data
+
     await update_reply_markup(uid, context)
 
     if uid != ADMIN_ID and data.startswith(("add_", "remove_", "assign_")):
         return
 
     msg = "❌ Unknown action."
+
     if data == "add_user":
         conversation_state[uid] = "await_add_user"
         msg = "🔢 Send the Telegram ID to add."
@@ -92,7 +80,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "❌ Send the Telegram ID to remove."
     elif data == "assign_boss":
         conversation_state[uid] = "await_employee"
-        msg = "👤 Send Employee's Telegram ID."
+        msg = "👤 Send Employee ID to assign boss."
     elif data == "list_users":
         if whitelist:
             msg = "\n".join([f"👤 {u} → 👨‍💼 {user_boss_map.get(u, '❓')}" for u in whitelist])
@@ -100,13 +88,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = "📂 No users found."
     elif data == "start_forward":
         awaiting_message[uid] = True
-        msg = "📤 Now forwarding messages to your boss."
+        msg = "📤 Forwarding enabled."
     elif data == "stop_forward":
         awaiting_message.pop(uid, None)
-        msg = "🛑 Stopped forwarding."
+        msg = "🛑 Forwarding stopped."
     elif data == "status":
-        boss_id = user_boss_map.get(uid)
-        msg = f"👨‍💼 Your boss is {boss_id}" if boss_id else "❌ No boss assigned."
+        boss = user_boss_map.get(uid)
+        msg = f"👨‍💼 Boss: {boss}" if boss else "❌ No boss assigned."
 
     sent = await query.message.reply_text(msg, reply_markup=role_keyboard(uid))
     last_bot_message[uid] = sent.message_id
@@ -135,6 +123,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rem_id = int(text)
             whitelist.discard(rem_id)
             user_boss_map.pop(rem_id, None)
+            awaiting_message.pop(rem_id, None)
             await update.message.reply_text(f"✅ Removed user {rem_id}")
         except:
             await update.message.reply_text("❌ Invalid ID.")
@@ -144,7 +133,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             emp_id = int(text)
             conversation_state[uid] = ("await_boss", emp_id)
-            await update.message.reply_text("👨‍💼 Send Boss ID.")
+            await update.message.reply_text("👨‍💼 Now send the Boss ID.")
         except:
             await update.message.reply_text("❌ Invalid employee ID.")
 
@@ -158,11 +147,30 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid boss ID.")
         conversation_state.pop(uid)
 
-# === SUSPICIOUS FILTER ===
+# === HELPER TO SEND ROLE MESSAGE ===
+
+async def send_role_message(uid, context):
+    await update_reply_markup(uid, context)
+    keyboard = role_keyboard(uid)
+
+    if uid == ADMIN_ID:
+        text = "👑 You are Admin."
+    elif uid in user_boss_map.values():
+        text = "👔 You are a Boss."
+    elif uid in whitelist:
+        text = "👋 Welcome! Use buttons below."
+    else:
+        text = "⛔ You're not authorized."
+        keyboard = None
+
+    sent = await context.bot.send_message(uid, text, reply_markup=keyboard)
+    last_bot_message[uid] = sent.message_id
+
+# === SUSPICIOUS CHECK ===
 
 def is_suspicious(text, user):
-    terms = ["my name", "this is", "i am", "username", "contact"]
-    return any(term in text.lower() for term in terms)
+    terms = ["my name", "this is", "username", str(user.id), user.username or ""]
+    return any(term.lower() in text.lower() for term in terms if term)
 
 # === MESSAGE HANDLER ===
 
@@ -174,18 +182,26 @@ async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_admin_text(update, context)
         return
 
-    if uid not in whitelist or not awaiting_message.get(uid):
+    # Auto show buttons for whitelisted user who never used /start
+    if uid in whitelist and uid not in last_bot_message:
+        await send_role_message(uid, context)
+        return
+
+    # Skip unapproved users
+    if uid not in whitelist:
+        return
+
+    if not awaiting_message.get(uid):
         return
 
     boss_id = user_boss_map.get(uid)
     if not boss_id:
-        await update.message.reply_text("❌ You don't have a boss assigned.")
+        await update.message.reply_text("❌ No boss assigned.")
         return
 
-    suspicious = update.message.text and is_suspicious(update.message.text, user)
-    if suspicious:
+    if update.message.text and is_suspicious(update.message.text, user):
         await update.message.reply_text("⚠️ Suspicious message blocked.")
-        await context.bot.send_message(ADMIN_ID, f"🚫 Suspicious message from {uid}: {update.message.text}")
+        await context.bot.send_message(ADMIN_ID, f"🚨 Suspicious from {uid}:\n{update.message.text}")
         return
 
     try:
@@ -196,11 +212,11 @@ async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await context.bot.copy_message(chat_id=boss_id, from_chat_id=uid, message_id=update.message.message_id)
 
-        sent = await update.message.reply_text("✅ Sent to boss.", reply_markup=employee_keyboard())
+        sent = await update.message.reply_text("✅ Message sent.", reply_markup=employee_keyboard())
         last_bot_message[uid] = sent.message_id
 
     except Exception as e:
-        await update.message.reply_text("❌ Failed to send.")
+        await update.message.reply_text("❌ Failed to forward.")
         logging.error(str(e))
 
 # === MAIN ===
